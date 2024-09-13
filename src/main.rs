@@ -78,12 +78,23 @@ fn main() {
 fn handle_packet(packet: &[u8]) {
     // Parse the Ethernet packet
     if let Some(ethernet) = EthernetPacket::new(packet) {
+        // Print Ethernet packet details
+        println!(
+            "Ethernet Packet: {} -> {} | Ethertype: {:?} | Length: {}",
+            ethernet.get_source(),
+            ethernet.get_destination(),
+            ethernet.get_ethertype(),
+            ethernet.packet().len()
+        );
+
         // Check if the payload is IPv4
         if ethernet.get_ethertype() == pnet::packet::ethernet::EtherTypes::Ipv4 {
             if let Some(ipv4) = Ipv4Packet::new(ethernet.payload()) {
                 let src = ipv4.get_source();
                 let dst = ipv4.get_destination();
                 let protocol = ipv4.get_next_level_protocol();
+                let ttl = ipv4.get_ttl();
+                let checksum = ipv4.get_checksum();
 
                 let protocol_str = match protocol {
                     IpNextHeaderProtocols::Tcp => "TCP",
@@ -96,8 +107,8 @@ fn handle_packet(packet: &[u8]) {
                 };
 
                 println!(
-                    "Source: {} -> Destination: {} | Protocol: {}",
-                    src, dst, protocol_str
+                    "IPv4 Packet: Source: {} -> Destination: {} | Protocol: {} | TTL: {} | Checksum: {}",
+                    src, dst, protocol_str, ttl, checksum
                 );
             }
         }
