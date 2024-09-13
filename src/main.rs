@@ -9,7 +9,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 fn main() {
-    // Parse command-line arguments
     let args: Vec<String> = env::args().collect();
     if args.len() != 2 {
         eprintln!("Usage: sudo {} <network_interface>", args[0]);
@@ -17,20 +16,35 @@ fn main() {
     }
 
     let interface_name = &args[1];
+    let interface = find_network_interface(interface_name);
+    let rx = create_datalink_channel(&interface, interface_name);
 
-    // Find the network interface
+    println!(
+        "Capturing packets on interface '{}'. Press Ctrl+C to stop.",
+        interface_name
+    );
+
+    let running = setup_ctrlc_handler();
+    capture_packets(rx, running);
+}
+
+fn find_network_interface(interface_name: &str) -> datalink::NetworkInterface {
     let interfaces = datalink::interfaces();
-    let interface = interfaces
+    interfaces
         .into_iter()
         .find(|iface| iface.name == *interface_name)
         .unwrap_or_else(|| {
             eprintln!("Error: Network interface '{}' not found.", interface_name);
             process::exit(1);
-        });
+        })
+}
 
-    // Create a channel to receive on
-    let (_, mut rx) = match datalink::channel(&interface, Default::default()) {
-        Ok(Ethernet(_, rx)) => ((), rx),
+fn create_datalink_channel(
+    interface: &datalink::NetworkInterface,
+    interface_name: &str,
+) -> Box<dyn datalink::DataLinkReceiver> {
+    match datalink::channel(interface, Default::default()) {
+        Ok(Ethernet(_, rx)) => rx,
         Ok(_) => {
             eprintln!(
                 "Error: Unsupported channel type for interface '{}'.",
@@ -45,22 +59,23 @@ fn main() {
             );
             process::exit(1);
         }
-    };
+    }
+}
 
-    println!(
-        "Capturing packets on interface '{}'. Press Ctrl+C to stop.",
-        interface_name
-    );
-
-    // Setup Ctrl+C handler for graceful termination
+fn setup_ctrlc_handler() -> Arc<AtomicBool> {
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
     ctrlc::set_handler(move || {
         r.store(false, Ordering::SeqCst);
     })
-    .expect("Error setting Ctrl-C handler");
+        .expect("Error setting Ctrl-C handler");
+    running
+}
 
-    // Start capturing packets
+fn capture_packets(
+    mut rx: Box<dyn datalink::DataLinkReceiver>,
+    running: Arc<AtomicBool>,
+) {
     while running.load(Ordering::SeqCst) {
         match rx.next() {
             Ok(packet) => {
@@ -71,46 +86,49 @@ fn main() {
             }
         }
     }
-
     println!("\nTerminating packet capture.");
 }
 
 fn handle_packet(packet: &[u8]) {
-    // Parse the Ethernet packet
     if let Some(ethernet) = EthernetPacket::new(packet) {
-        // Print Ethernet packet details
-        println!(
-            "Ethernet Packet: {} -> {} | Ethertype: {:?} | Length: {}",
-            ethernet.get_source(),
-            ethernet.get_destination(),
-            ethernet.get_ethertype(),
-            ethernet.packet().len()
-        );
-
-        // Check if the payload is IPv4
+        print_ethernet_packet(&ethernet);
         if ethernet.get_ethertype() == pnet::packet::ethernet::EtherTypes::Ipv4 {
             if let Some(ipv4) = Ipv4Packet::new(ethernet.payload()) {
-                let src = ipv4.get_source();
-                let dst = ipv4.get_destination();
-                let protocol = ipv4.get_next_level_protocol();
-                let ttl = ipv4.get_ttl();
-                let checksum = ipv4.get_checksum();
-
-                let protocol_str = match protocol {
-                    IpNextHeaderProtocols::Tcp => "TCP",
-                    IpNextHeaderProtocols::Udp => "UDP",
-                    IpNextHeaderProtocols::Icmp => "ICMP",
-                    other => {
-                        println!("Unsupported protocol: {:?}", other);
-                        return;
-                    }
-                };
-
-                println!(
-                    "IPv4 Packet: Source: {} -> Destination: {} | Protocol: {} | TTL: {} | Checksum: {}",
-                    src, dst, protocol_str, ttl, checksum
-                );
+                print_ipv4_packet(&ipv4);
             }
         }
     }
+}
+
+fn print_ethernet_packet(ethernet: &EthernetPacket) {
+    println!(
+        "Ethernet Packet: {} -> {} | Ethertype: {:?} | Length: {}",
+        ethernet.get_source(),
+        ethernet.get_destination(),
+        ethernet.get_ethertype(),
+        ethernet.packet().len()
+    );
+}
+
+fn print_ipv4_packet(ipv4: &Ipv4Packet) {
+    let src = ipv4.get_source();
+    let dst = ipv4.get_destination();
+    let protocol = ipv4.get_next_level_protocol();
+    let ttl = ipv4.get_ttl();
+    let checksum = ipv4.get_checksum();
+
+    let protocol_str = match protocol {
+        IpNextHeaderProtocols::Tcp => "TCP",
+        IpNextHeaderProtocols::Udp => "UDP",
+        IpNextHeaderProtocols::Icmp => "ICMP",
+        other => {
+            println!("Unsupported protocol: {:?}", other);
+            return;
+        }
+    };
+
+    println!(
+        "IPv4 Packet: Source: {} -> Destination: {} | Protocol: {} | TTL: {} | Checksum: {}",
+        src, dst, protocol_str, ttl, checksum
+    );
 }
